@@ -1,1 +1,1 @@
-# rusteze-commit
+# Rusteze Commit 🛢⚡
