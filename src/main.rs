@@ -16,12 +16,25 @@ pub enum MyError {
     ApiError(String),
 }
 
-async fn get_commit_message(api_key: &str, prompt: &str) -> Result<Vec<String>, MyError> {
+#[derive(Debug)]
+pub struct Config {
+    pub use_emoji: bool,
+    pub use_description: bool,
+}
+
+async fn get_commit_message(api_key: &str, prompt: &str, config: &Config) -> Result<Vec<String>, MyError> {
     let client = reqwest::Client::new();
 
-    let prompt = format!("You are to act as the author of a commit message in git. Your mission is to create \
-    clean and comprehensive commit messages in the conventional commit convention and \
-    explain why a change was done. The diff is: {}", prompt);
+    let prompt = format!(
+        "You are to act as the author of a commit message in git. Your mission is to create \
+        clean and comprehensive commit messages in the conventional commit convention and \
+        explain why a change was done. The diff is: {}\
+        \nUse GitMoji convention to preface the commit: {}\
+        \nAdd a short description of WHY the changes are done after the commit message: {}",
+        prompt,
+        config.use_emoji,
+        config.use_description
+    );
 
     let request_body = json!({
         "model": "gpt-3.5-turbo",
@@ -56,7 +69,6 @@ async fn get_commit_message(api_key: &str, prompt: &str) -> Result<Vec<String>, 
     }
 }
 
-
 fn get_diff(repo: &Repository) -> Result<String, MyError> {
     let head = repo.head()?;
     let tree = head.peel_to_tree()?;
@@ -79,11 +91,11 @@ fn create_commit(repo: &Repository, message: &str) -> Result<(), MyError> {
     let tree = repo.find_tree(oid)?;
     let head = repo.head()?.target().unwrap();
     let parent = repo.find_commit(head)?;
-
     repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[&parent])?;
 
     Ok(())
 }
+
 
 #[tokio::main]
 async fn main() -> Result<(), MyError> {
@@ -98,6 +110,18 @@ async fn main() -> Result<(), MyError> {
                 .value_name("API_KEY")
                 .takes_value(true),
         )
+        .arg(
+            Arg::new("use_emoji")
+                .short('e')
+                .long("use-emoji")
+                .takes_value(false)
+        )
+        .arg(
+            Arg::new("use_description")
+                .short('d')
+                .long("use-description")
+                .takes_value(false)
+        )
         .get_matches();
 
     let api_key = matches.value_of("api_key").unwrap_or_else(|| {
@@ -105,9 +129,14 @@ async fn main() -> Result<(), MyError> {
         std::process::exit(1);
     });
 
+    let config = Config {
+        use_emoji: matches.is_present("use_emoji"),
+        use_description: matches.is_present("use_description"),
+    };
+
     let repo = Repository::open_from_env()?;
     let diff = get_diff(&repo)?;
-    let messages = get_commit_message(api_key, &diff).await?;
+    let messages = get_commit_message(api_key, &diff, &config).await?;
 
     // Display the available choices and prompt the user to select one
     println!("Available commit messages:");
