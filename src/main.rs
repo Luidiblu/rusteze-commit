@@ -16,8 +16,13 @@ pub enum MyError {
     ApiError(String),
 }
 
-async fn get_commit_message(api_key: &str, prompt: &str) -> Result<String, MyError> {
+async fn get_commit_message(api_key: &str, prompt: &str) -> Result<Vec<String>, MyError> {
     let client = reqwest::Client::new();
+
+    let prompt = format!("You are to act as the author of a commit message in git. Your mission is to create \
+    clean and comprehensive commit messages in the conventional commit convention and \
+    explain why a change was done. The diff is: {}", prompt);
+
     let request_body = json!({
         "model": "gpt-3.5-turbo",
         "messages": [{"role": "user", "content": prompt}]
@@ -33,12 +38,24 @@ async fn get_commit_message(api_key: &str, prompt: &str) -> Result<String, MyErr
 
     let json: serde_json::Value = response.json().await?;
 
-    if let Some(message) = json["choices"].get(0).and_then(|choice| choice["text"].as_str()) {
-        Ok(message.trim().to_string())
+    let mut messages = Vec::new();
+    if let Some(choices) = json["choices"].as_array() {
+        for choice in choices {
+            if let Some(message) = choice["message"]["content"].as_str() {
+                messages.push(message.trim().to_string());
+            }
+        }
+    } else if let Some(message) = json["choices"][0]["message"]["content"].as_str() {
+        messages.push(message.trim().to_string());
+    }
+
+    if messages.is_empty() {
+        Err(MyError::ApiError(format!("Failed to extract commit messages from API response: {:?}", json)))
     } else {
-        Err(MyError::ApiError(format!("Failed to extract commit message from API response: {:?}", json)))
+        Ok(messages)
     }
 }
+
 
 fn get_diff(repo: &Repository) -> Result<String, MyError> {
     let head = repo.head()?;
@@ -90,7 +107,19 @@ async fn main() -> Result<(), MyError> {
 
     let repo = Repository::open_from_env()?;
     let diff = get_diff(&repo)?;
-    let message = get_commit_message(api_key, &diff).await?;
+    let messages = get_commit_message(api_key, &diff).await?;
+
+    // Display the available choices and prompt the user to select one
+    println!("Available commit messages:");
+    for (index, message) in messages.iter().enumerate() {
+        println!("{}. {}", index + 1, message);
+    }
+    println!("Please enter the number of the commit message you'd like to use:");
+    let mut user_input = String::new();
+    std::io::stdin().read_line(&mut user_input)?;
+    let choice_index: usize = user_input.trim().parse().unwrap_or(0);
+    let message = &messages.get(choice_index - 1).ok_or(MyError::ApiError("Invalid choice".to_string()))?;
+
     create_commit(&repo, &message)?;
 
     Ok(())
